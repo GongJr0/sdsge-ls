@@ -1,0 +1,50 @@
+version: 2
+
+project_name: sdsge-ls
+
+builds:
+  - id: sdsge-ls
+    main: ./cmd/sdsge-ls
+    binary: sdsge-ls
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: archives
+    ids:
+      - sdsge-ls
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  draft: true
+  prerelease: auto
+
+changelog:
+  sort: asc
+
+# This release flow is intentionally unsigned by default.
+# GoReleaser can also:
+# - sign checksum/archive artifacts via `signs`
+# - sign binaries before archiving via `binary_signs`
+# - sign and notarize macOS binaries via `notarize`
+# Those require additional secrets/tooling and will be layered on later.

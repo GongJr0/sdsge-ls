@@ -15,7 +15,7 @@ import (
 
 const lsName = "sdsge-ls"
 
-var version = "0.0.1"
+var version = "dev"
 
 type globalOptions struct {
 	LogLevel string
