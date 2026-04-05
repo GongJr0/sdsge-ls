@@ -13,7 +13,12 @@ import (
 )
 
 var (
-	modelLHSRE = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*t(?:\s*[+-]\s*\d+)?\s*\)\s*$`)
+	modelLHSRE                  = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*t(?:\s*[+-]\s*\d+)?\s*\)\s*$`)
+	allowedLinearizationMethods = map[string]struct{}{
+		"log":    {},
+		"none":   {},
+		"taylor": {},
+	}
 	builtinFns = map[string]struct{}{
 		"abs":  {},
 		"cos":  {},
@@ -83,11 +88,18 @@ func validateDuplicateKeys(node *yaml.Node) []protocol.Diagnostic {
 func validateDeclarationSequences(doc *yaml.Node) []protocol.Diagnostic {
 	var diags []protocol.Diagnostic
 
-	diags = append(diags, validateDeclarationSequence(getMapValue(doc, "variables"), "variables")...)
+	diags = append(diags, validateVariableDeclarations(getMapValue(doc, "variables"))...)
 	diags = append(diags, validateDeclarationSequence(getMapValue(doc, "parameters"), "parameters")...)
 	diags = append(diags, validateDeclarationSequence(getMapValue(doc, "observables"), "observables")...)
 
 	return diags
+}
+
+func validateVariableDeclarations(node *yaml.Node) []protocol.Diagnostic {
+	if node == nil || node.Kind != yaml.SequenceNode {
+		return nil
+	}
+	return validateDeclarationSequence(node, "variables")
 }
 
 func validateDeclarationSequence(node *yaml.Node, name string) []protocol.Diagnostic {
@@ -225,6 +237,32 @@ func validateKalmanRCorr(doc *yaml.Node, decls Decls) []protocol.Diagnostic {
 func validateScalarRules(doc *yaml.Node) []protocol.Diagnostic {
 	var diags []protocol.Diagnostic
 
+	variables := getMapValue(doc, "variables")
+	if variables != nil && variables.Kind == yaml.MappingNode {
+		for i := 0; i < len(variables.Content); i += 2 {
+			nameNode := variables.Content[i]
+			specNode := variables.Content[i+1]
+			if specNode == nil || specNode.Kind != yaml.MappingNode {
+				continue
+			}
+
+			linearizationNode := getMapValue(specNode, "linearization")
+			if linearizationNode != nil && linearizationNode.Kind == yaml.ScalarNode && !isNullNode(linearizationNode) {
+				method := strings.ToLower(strings.TrimSpace(linearizationNode.Value))
+				if _, ok := allowedLinearizationMethods[method]; !ok {
+					diags = append(diags, diagAtNode(
+						linearizationNode,
+						protocol.DiagnosticSeverityError,
+						fmt.Sprintf(
+							"variables.%s.linearization must be one of: log, none, taylor",
+							nameNode.Value,
+						),
+					))
+				}
+			}
+		}
+	}
+
 	constrained := getMapValue(doc, "constrained")
 	if constrained != nil && constrained.Kind == yaml.MappingNode {
 		for i := 1; i < len(constrained.Content); i += 2 {
@@ -308,6 +346,36 @@ func validateScalarRules(doc *yaml.Node) []protocol.Diagnostic {
 			protocol.DiagnosticSeverityError,
 			"kalman.symmetrize must be boolean",
 		))
+	}
+
+	return diags
+}
+
+func validateVariableMetadataExpressions(doc *yaml.Node, decls Decls) []protocol.Diagnostic {
+	var diags []protocol.Diagnostic
+
+	variables := getMapValue(doc, "variables")
+	if variables == nil || variables.Kind != yaml.MappingNode {
+		return diags
+	}
+
+	for i := 0; i < len(variables.Content); i += 2 {
+		nameNode := variables.Content[i]
+		specNode := variables.Content[i+1]
+		if specNode == nil || specNode.Kind != yaml.MappingNode {
+			continue
+		}
+
+		steadyStateNode := getMapValue(specNode, "steady_state")
+		if steadyStateNode == nil || steadyStateNode.Kind != yaml.ScalarNode || isNullNode(steadyStateNode) {
+			continue
+		}
+
+		context := fmt.Sprintf("variables.%s.steady_state", nameNode.Value)
+		diags = append(
+			diags,
+			validateExpressionRefs(steadyStateNode, steadyStateNode.Value, 0, decls, context)...,
+		)
 	}
 
 	return diags

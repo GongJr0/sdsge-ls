@@ -50,6 +50,48 @@ calibration:
 	}
 }
 
+func TestCheckValidMappingVariablesHasNoDiagnostics(t *testing.T) {
+	text := strings.TrimSpace(`
+name: demo
+variables:
+  x:
+    linearization: taylor
+    steady_state: beta
+  r:
+    linearization: log
+    steady_state: r_star
+parameters: [beta, r_star]
+shock_map:
+  e_x: x
+observables: [Obs]
+equations:
+  model:
+    - x(t) = beta*x(t+1) + e_x
+  constraint: {}
+  observables:
+    Obs: x(t) + r_star
+calibration:
+  parameters:
+    beta: 0.9
+    r_star: 1.0
+  shocks:
+    std:
+      e_x: beta
+    corr: {}
+kalman:
+  y: [Obs]
+  R:
+    std:
+      Obs: beta
+    corr: {}
+`) + "\n"
+
+	diags := Check(text)
+	if len(diags) != 0 {
+		t.Fatalf("expected no diagnostics for mapping-style variables, got %#v", diags)
+	}
+}
+
 func TestCompleteSortsItems(t *testing.T) {
 	text := "kalman:\n  y:\n    - \nobservables: [Rate, Infl, OutGap]\n"
 
@@ -141,6 +183,27 @@ func TestCompleteReturnsObservablePairKeys(t *testing.T) {
 	}
 }
 
+func TestCompleteReturnsVariableMetadataKeys(t *testing.T) {
+	text := strings.Join([]string{
+		"name: demo",
+		"variables:",
+		"  x:",
+		"    ",
+	}, "\n")
+
+	items := Complete(text, 3, 4)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 variable metadata completion items, got %#v", items)
+	}
+
+	want := []string{"linearization", "steady_state"}
+	for i, label := range want {
+		if items[i].Label != label {
+			t.Fatalf("expected item %d to be %q, got %#v", i, label, items)
+		}
+	}
+}
+
 func TestCheckReportsPairAndEquationIdentifierErrors(t *testing.T) {
 	text := strings.Join([]string{
 		"name: demo",
@@ -181,6 +244,41 @@ func TestCheckReportsPairAndEquationIdentifierErrors(t *testing.T) {
 	assertHasDiagnostic(t, diags, `key "e_x, e_x" in calibration.shocks.corr must refer to two distinct names`)
 	assertHasDiagnostic(t, diags, `name "Missing" in kalman.R.corr is not declared in observables`)
 	assertHasDiagnostic(t, diags, `value for calibration.parameters.beta must be numeric`)
+}
+
+func TestCheckRejectsInvalidVariableLinearizationMethod(t *testing.T) {
+	text := strings.TrimSpace(`
+name: demo
+variables:
+  x:
+    linearization: quadratic
+parameters: [beta]
+shock_map:
+  e_x: x
+observables: [Obs]
+equations:
+  model:
+    - x(t) = x(t+1) + e_x
+  constraint: {}
+  observables:
+    Obs: x(t)
+calibration:
+  parameters:
+    beta: 0.9
+  shocks:
+    std:
+      e_x: beta
+    corr: {}
+kalman:
+  y: [Obs]
+  R:
+    std:
+      Obs: beta
+    corr: {}
+`) + "\n"
+
+	diags := Check(text)
+	assertHasDiagnostic(t, diags, `variables.x.linearization must be one of: log, none, taylor`)
 }
 
 func assertHasDiagnostic(t *testing.T, diags []Diagnostic, msg string) {

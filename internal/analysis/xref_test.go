@@ -104,6 +104,86 @@ func TestDefinitionFallsBackOnIncompleteDocumentForUniqueSymbol(t *testing.T) {
 	}
 }
 
+func TestDefinitionFindsVariableMappingDeclaration(t *testing.T) {
+	text := strings.Join([]string{
+		"name: demo",
+		"variables:",
+		"  x:",
+		"    steady_state: beta",
+		"parameters: [beta, meas_infl]",
+		"shock_map:",
+		"  e_x: x",
+		"observables: [Infl]",
+		"equations:",
+		"  model:",
+		"    - x(t) = x(t+1) + e_x",
+		"  constraint: {}",
+		"  observables:",
+		"    Infl: x(t)",
+		"calibration:",
+		"  parameters:",
+		"    beta: 0.9",
+		"    meas_infl: 1.0",
+		"  shocks:",
+		"    std:",
+		"      e_x: beta",
+		"kalman:",
+		"  y: [Infl]",
+		"  R:",
+		"    std:",
+		"      Infl: meas_infl",
+	}, "\n") + "\n"
+
+	line, char := findOccurrence(t, text, "x(t) = x(t+1) + e_x", 0)
+	definition := Definition(text, line, char)
+	if definition == nil {
+		t.Fatal("expected a definition for x")
+	}
+	if definition.Name != "x" || definition.Kind != SymbolKindVariable {
+		t.Fatalf("expected variable definition for x, got %#v", definition)
+	}
+	if definition.Role != SymbolRoleDeclaration {
+		t.Fatalf("expected declaration role, got %#v", definition)
+	}
+}
+
+func TestReferencesIncludeSteadyStateParameterUsage(t *testing.T) {
+	text := strings.Join([]string{
+		"name: demo",
+		"variables:",
+		"  x:",
+		"    steady_state: beta",
+		"parameters: [beta, meas_infl]",
+		"shock_map:",
+		"  e_x: x",
+		"observables: [Infl]",
+		"equations:",
+		"  model:",
+		"    - x(t) = x(t+1) + e_x",
+		"  constraint: {}",
+		"  observables:",
+		"    Infl: x(t)",
+		"calibration:",
+		"  parameters:",
+		"    beta: 0.9",
+		"    meas_infl: 1.0",
+		"  shocks:",
+		"    std:",
+		"      e_x: beta",
+		"kalman:",
+		"  y: [Infl]",
+		"  R:",
+		"    std:",
+		"      Infl: meas_infl",
+	}, "\n") + "\n"
+
+	line, char := findOccurrence(t, text, "beta", 0)
+	references := References(text, line, char, false)
+	if len(references) != 3 {
+		t.Fatalf("expected 3 beta references without declaration, got %d: %#v", len(references), references)
+	}
+}
+
 func xrefFixture() string {
 	return strings.Join([]string{
 		"name: demo",

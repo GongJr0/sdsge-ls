@@ -210,6 +210,25 @@ func schemaAtPath(path []string) map[string]Field {
 		return schema
 	}
 
+	if path[0] == "variables" {
+		if len(path) == 1 {
+			return nil
+		}
+
+		current := variableMetadataSchema
+		for _, part := range path[2:] {
+			field, ok := current[part]
+			if !ok {
+				return nil
+			}
+			current = field.Children
+			if current == nil {
+				return nil
+			}
+		}
+		return current
+	}
+
 	current := schema
 	for _, part := range path {
 		field, ok := current[part]

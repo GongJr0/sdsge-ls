@@ -84,7 +84,7 @@ func buildSymbolIndex(text string) *symbolIndex {
 		occurrences:  map[symbolKey][]SymbolOccurrence{},
 	}
 
-	index.collectDeclaredSequence(getMapValue(doc, "variables"), SymbolKindVariable)
+	index.collectDeclaredVariables(getMapValue(doc, "variables"))
 	index.collectDeclaredSequence(getMapValue(doc, "parameters"), SymbolKindParameter)
 	index.collectDeclaredSequence(getMapValue(doc, "observables"), SymbolKindObservable)
 	index.collectDeclaredMappingKeys(getMapValue(doc, "shock_map"), SymbolKindShock)
@@ -96,6 +96,17 @@ func buildSymbolIndex(text string) *symbolIndex {
 	index.sort()
 
 	return index
+}
+
+func (s *symbolIndex) collectDeclaredVariables(node *yaml.Node) {
+	switch {
+	case node == nil:
+		return
+	case node.Kind == yaml.SequenceNode:
+		s.collectDeclaredSequence(node, SymbolKindVariable)
+	case node.Kind == yaml.MappingNode:
+		s.collectDeclaredMappingKeys(node, SymbolKindVariable)
+	}
 }
 
 func (s *symbolIndex) collectDeclaredSequence(node *yaml.Node, kind SymbolKind) {
@@ -131,6 +142,7 @@ func (s *symbolIndex) collectVariableReferences(doc *yaml.Node) {
 	s.collectMappingKeyReferences(getMapValue(doc, "constrained"), SymbolKindVariable)
 	s.collectMappingValueReferences(getMapValue(doc, "shock_map"), SymbolKindVariable)
 	s.collectMappingKeyReferences(getNestedMapValue(doc, "kalman", "P0", "diag"), SymbolKindVariable)
+	s.collectVariableSteadyStateReferences(getMapValue(doc, "variables"), SymbolKindVariable)
 	s.collectExpressionReferences(getNestedMapValue(doc, "equations", "model"), SymbolKindVariable)
 	s.collectExpressionReferences(getNestedMapValue(doc, "equations", "observables"), SymbolKindVariable)
 }
@@ -141,6 +153,7 @@ func (s *symbolIndex) collectParameterReferences(doc *yaml.Node) {
 	s.collectMappingValueReferences(getNestedMapValue(doc, "calibration", "shocks", "corr"), SymbolKindParameter)
 	s.collectMappingValueReferences(getNestedMapValue(doc, "kalman", "R", "std"), SymbolKindParameter)
 	s.collectMappingValueReferences(getNestedMapValue(doc, "kalman", "R", "corr"), SymbolKindParameter)
+	s.collectVariableSteadyStateReferences(getMapValue(doc, "variables"), SymbolKindParameter)
 	s.collectExpressionReferences(getNestedMapValue(doc, "equations", "model"), SymbolKindParameter)
 	s.collectExpressionReferences(getNestedMapValue(doc, "equations", "observables"), SymbolKindParameter)
 }
@@ -155,8 +168,29 @@ func (s *symbolIndex) collectObservableReferences(doc *yaml.Node) {
 func (s *symbolIndex) collectShockReferences(doc *yaml.Node) {
 	s.collectMappingKeyReferences(getNestedMapValue(doc, "calibration", "shocks", "std"), SymbolKindShock)
 	s.collectPairKeyReferences(getNestedMapValue(doc, "calibration", "shocks", "corr"), SymbolKindShock)
+	s.collectVariableSteadyStateReferences(getMapValue(doc, "variables"), SymbolKindShock)
 	s.collectExpressionReferences(getNestedMapValue(doc, "equations", "model"), SymbolKindShock)
 	s.collectExpressionReferences(getNestedMapValue(doc, "equations", "observables"), SymbolKindShock)
+}
+
+func (s *symbolIndex) collectVariableSteadyStateReferences(node *yaml.Node, kind SymbolKind) {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return
+	}
+
+	for i := 0; i < len(node.Content); i += 2 {
+		specNode := node.Content[i+1]
+		if specNode == nil || specNode.Kind != yaml.MappingNode {
+			continue
+		}
+
+		steadyStateNode := getMapValue(specNode, "steady_state")
+		if steadyStateNode == nil || steadyStateNode.Kind != yaml.ScalarNode {
+			continue
+		}
+
+		s.collectExpressionScalar(steadyStateNode, kind)
+	}
 }
 
 func (s *symbolIndex) collectMappingKeyReferences(node *yaml.Node, kind SymbolKind) {

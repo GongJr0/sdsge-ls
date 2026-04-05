@@ -4,14 +4,18 @@ import (
 	"fmt"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 	"go.yaml.in/yaml/v3"
+	"strings"
 )
 
 type Field struct {
-	Required  bool
-	NodeKind  yaml.Kind
-	Children  map[string]Field
-	ItemKind  yaml.Kind
-	ValueKind yaml.Kind
+	Required     bool
+	NodeKind     yaml.Kind
+	AltKinds     []yaml.Kind
+	Children     map[string]Field
+	ItemKind     yaml.Kind
+	ValueKind    yaml.Kind
+	DynamicValue *Field
+	AllowNull    bool
 }
 
 type Decls struct {
@@ -33,6 +37,23 @@ var allowedTopLevel = map[string]struct{}{
 	"kalman":      {},
 }
 
+var variableMetadataSchema = map[string]Field{
+	"steady_state": {
+		Required: false,
+		NodeKind: yaml.ScalarNode,
+	},
+	"linearization": {
+		Required: false,
+		NodeKind: yaml.ScalarNode,
+	},
+}
+
+var variableSpecField = Field{
+	NodeKind:  yaml.MappingNode,
+	Children:  variableMetadataSchema,
+	AllowNull: true,
+}
+
 var schema = map[string]Field{
 	"name": {
 		Required: true,
@@ -40,9 +61,11 @@ var schema = map[string]Field{
 	},
 
 	"variables": {
-		Required: true,
-		NodeKind: yaml.SequenceNode,
-		ItemKind: yaml.ScalarNode,
+		Required:     true,
+		NodeKind:     yaml.MappingNode,
+		AltKinds:     []yaml.Kind{yaml.SequenceNode},
+		ItemKind:     yaml.ScalarNode,
+		DynamicValue: &variableSpecField,
 	},
 	"constrained": {
 		Required:  false,
@@ -228,6 +251,7 @@ func validateCrossRefs(doc *yaml.Node, decls Decls) []protocol.Diagnostic {
 	diags = append(diags, validateKalmanY(doc, decls)...)
 	diags = append(diags, validateKalmanP0Diag(doc, decls)...)
 	diags = append(diags, validateScalarRules(doc)...)
+	diags = append(diags, validateVariableMetadataExpressions(doc, decls)...)
 	diags = append(diags, validateEquations(doc, decls)...)
 
 	return diags
@@ -263,6 +287,19 @@ func sequenceToSet(node *yaml.Node) map[string]struct{} {
 	}
 
 	return out
+}
+
+func declarationSet(node *yaml.Node) map[string]struct{} {
+	switch {
+	case node == nil:
+		return map[string]struct{}{}
+	case node.Kind == yaml.SequenceNode:
+		return sequenceToSet(node)
+	case node.Kind == yaml.MappingNode:
+		return mappingKeysToSet(node)
+	default:
+		return map[string]struct{}{}
+	}
 }
 
 func mappingKeysToSet(node *yaml.Node) map[string]struct{} {
@@ -496,7 +533,7 @@ func validateMappingValuesInSet(node *yaml.Node, allowed map[string]struct{}, pa
 
 func collectDecls(doc *yaml.Node) Decls {
 	return Decls{
-		Variables:   sequenceToSet(getMapValue(doc, "variables")),
+		Variables:   declarationSet(getMapValue(doc, "variables")),
 		Parameters:  sequenceToSet(getMapValue(doc, "parameters")),
 		Observables: sequenceToSet(getMapValue(doc, "observables")),
 		Shocks:      mappingKeysToSet(getMapValue(doc, "shock_map")),
@@ -520,11 +557,15 @@ func validateNode(node *yaml.Node, field Field, path string) []protocol.Diagnost
 		return diags
 	}
 
-	if node.Kind != field.NodeKind {
+	if field.AllowNull && isNullNode(node) {
+		return diags
+	}
+
+	if !fieldAllowsKind(field, node.Kind) {
 		diags = append(diags, diagAtNode(
 			node,
 			protocol.DiagnosticSeverityError,
-			fmt.Sprintf("%s must be %s", path, kindName(field.NodeKind)),
+			fmt.Sprintf("%s must be %s", path, fieldKindName(field)),
 		))
 		return diags
 	}
@@ -568,7 +609,20 @@ func validateMapping(node *yaml.Node, field Field, path string) []protocol.Diagn
 		return diags
 	}
 
-	// Case 2: free-form mapping with constrained value kind
+	// Case 2: free-form mapping with nested value schema
+	if field.DynamicValue != nil {
+		for i := 0; i < len(node.Content); i += 2 {
+			keyNode := node.Content[i]
+			valNode := node.Content[i+1]
+			diags = append(
+				diags,
+				validateNode(valNode, *field.DynamicValue, joinPath(path, keyNode.Value))...,
+			)
+		}
+		return diags
+	}
+
+	// Case 3: free-form mapping with constrained value kind
 	if field.ValueKind != 0 {
 		for i := 0; i < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
@@ -585,6 +639,50 @@ func validateMapping(node *yaml.Node, field Field, path string) []protocol.Diagn
 	}
 
 	return diags
+}
+
+func fieldAllowsKind(field Field, kind yaml.Kind) bool {
+	if kind == field.NodeKind {
+		return true
+	}
+	for _, alt := range field.AltKinds {
+		if kind == alt {
+			return true
+		}
+	}
+	return false
+}
+
+func fieldKindName(field Field) string {
+	kinds := []string{kindName(field.NodeKind)}
+	for _, alt := range field.AltKinds {
+		kinds = append(kinds, kindName(alt))
+	}
+	if field.AllowNull {
+		kinds = append(kinds, "null")
+	}
+	if len(kinds) == 1 {
+		return kinds[0]
+	}
+	return strings.Join(kinds[:len(kinds)-1], " or ") + " or " + kinds[len(kinds)-1]
+}
+
+func isNullNode(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Tag == "!!null" {
+		return true
+	}
+	if node.Kind != yaml.ScalarNode {
+		return false
+	}
+	switch strings.TrimSpace(strings.ToLower(node.Value)) {
+	case "", "null", "~":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateMappingAgainstSchema(node *yaml.Node, spec map[string]Field, path string) []protocol.Diagnostic {
